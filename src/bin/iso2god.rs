@@ -100,6 +100,8 @@ fn main() -> Result<(), Error> {
         let name = game_list::find_title_by_id(exe_info.title_id).unwrap_or("(unknown)".to_owned());
 
         println!("Title ID: {title_id}");
+        let media_id = format!("{:08X}", exe_info.media_id);
+        println!("Media ID: {media_id}");
         println!("    Name: {name}");
         match content_type {
             ContentType::GamesOnDemand => println!("    Type: Games on Demand"),
