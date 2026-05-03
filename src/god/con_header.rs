@@ -99,8 +99,13 @@ impl ConHeaderBuilder {
     }
 
     pub fn with_game_title(mut self, game_title: &str) -> Self {
-        self.write_utf16_be(0x0411, game_title);
-        self.write_utf16_be(0x1691, game_title);
+        let title = if game_title.len() > 62 {
+            &game_title[0..62]
+        } else {
+            game_title
+        };
+        self.write_utf16_be(0x0411, title);
+        self.write_utf16_be(0x1691, title);
         self
     }
 
@@ -119,4 +124,20 @@ impl ConHeaderBuilder {
 
         self.buffer
     }
+}
+
+pub fn read_block_count(buffer: &[u8]) -> u32 {
+    let blocks_allocated = BE::read_u24(&buffer[0x0392..]);
+    blocks_allocated
+}
+
+pub fn read_mht_hash(buffer: &[u8]) -> [u8; 20] {
+    let mut hash: [u8; 20] = [0u8; 20];
+    let len = hash.len();
+    hash.copy_from_slice(&buffer[0x037d..0x037d + len]);
+    hash
+}
+
+pub fn read_part_count(buffer: &[u8]) -> u32 {
+    LE::read_u32(&buffer[0x03a0..])
 }

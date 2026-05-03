@@ -12,8 +12,11 @@ use clap::{Parser, ValueEnum, arg, command};
 use rayon::prelude::*;
 
 use iso2god::executable::TitleInfo;
-use iso2god::god::ContentType;
-use iso2god::{game_list, god, iso};
+use iso2god::god::{read_mht_hash, ContentType};
+use iso2god::god::read_block_count;
+use iso2god::god::read_part_count;
+
+use iso2god::{game_list, god};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -62,6 +65,15 @@ enum TrimMode {
     // FullRebuild,
 }
 
+// TODO: Twister Mania is great to test this, the image is small (2 blocks) and it fails with xdvdfs repackaging
+// fn size_to_sectors(size: u32) -> u32 {
+//     (size + xdvdfs::layout::SECTOR_SIZE - 1) / xdvdfs::layout::SECTOR_SIZE
+// }
+
+// fn sectors_to_size(sectors: u32) -> u32 {
+//     sectors * xdvdfs::layout::SECTOR_SIZE
+// }
+
 fn main() -> Result<(), Error> {
     let args = Cli::parse();
 
@@ -80,40 +92,43 @@ fn main() -> Result<(), Error> {
 
     println!("extracting ISO metadata");
 
-    let source_iso_file = File::open(&args.source_iso).context("error opening source ISO file")?;
-
     let source_iso_file_meta =
         fs::metadata(&args.source_iso).context("error reading source ISO file metadata")?;
 
-    let mut source_iso =
-        iso::IsoReader::read(source_iso_file).context("error reading source ISO")?;
+    let img = File::options().read(true).open(&args.source_iso)?;
+    let xiso = std::io::BufReader::new(img);
+    let mut xiso = xdvdfs::blockdev::OffsetWrapper::new(xiso).unwrap();
+
+
+    let volume = xdvdfs::read::read_volume(&mut xiso).unwrap();
+    
 
     let title_info =
-        TitleInfo::from_image(&mut source_iso).context("error reading image executable")?;
+        TitleInfo::from_image(&mut xiso, volume.clone()).context("error reading image executable")?;
 
     let exe_info = title_info.execution_info;
     let content_type = title_info.content_type;
 
-    {
-        let title_id = format!("{:08X}", exe_info.title_id);
-        let name = game_list::find_title_by_id(exe_info.title_id).unwrap_or("(unknown)".to_owned());
-
-        println!("Title ID: {title_id}");
-        println!("    Name: {name}");
-        match content_type {
-            ContentType::GamesOnDemand => println!("    Type: Games on Demand"),
-            ContentType::XboxOriginal => println!("    Type: Xbox Original"),
-        }
-    }
-
-    if args.dry_run {
-        return Ok(());
-    }
+    let root_offset = {
+        // this is a workaround that leeks the offset implementation detail from xdvdfs which we need
+        // to use the current god creation code which doesn't use the xdvdfs::blockdev::BlockDeviceRead trait
+        xiso.seek(SeekFrom::Start(0))?;
+        xiso.get_mut().stream_position().unwrap()
+    };
 
     let data_size = if args.trim.unwrap_or_default() == TrimMode::FromEnd {
-        source_iso.get_max_used_prefix_size()
+        volume.root_table.file_tree(&mut xiso)
+            .context("error walking root directory tree")?
+            .iter()
+            .map(|dirent| {
+                if dirent.1.node.dirent.data.is_empty() {
+                    return 0;
+                }
+                return dirent.1.node.dirent.data.offset::<std::io::Error>(0).unwrap() + dirent.1.node.dirent.data.size() as u64
+                })
+            .max()
+            .unwrap_or(0)
     } else {
-        let root_offset = source_iso.volume_descriptor.root_offset;
         source_iso_file_meta.len() - root_offset
     };
 
@@ -122,17 +137,70 @@ fn main() -> Result<(), Error> {
 
     let file_layout = god::FileLayout::new(&args.dest_dir, &exe_info, content_type);
 
+    {
+        let title_id = format!("{:08X}", exe_info.title_id);
+        let name = game_list::find_title_by_id(exe_info.title_id).unwrap_or("(unknown)".to_owned());
+        let media_id = format!("{:08X}", exe_info.media_id);
+        let data_path = file_layout.data_dir_path();
+        let data_path: std::path::Display<'_> = data_path.display();
+        let con_header_path = file_layout.con_header_file_path();
+        let con_header_path = con_header_path.display();
+
+        println!("Title ID: {title_id}");        
+        println!("Media ID: {media_id}");
+        println!("    Data path: {data_path}");
+        println!("    Con header path: {con_header_path}");
+        println!("    Name: {name}");
+        match content_type {
+            ContentType::GamesOnDemand => println!("    Type: Games on Demand"),
+            ContentType::XboxOriginal => println!("    Type: Xbox Original"),
+        }
+    }
+
+
+
     println!("clearing data directory");
 
     ensure_empty_dir(&file_layout.data_dir_path()).context("error clearing data directory")?;
+    // read part count using an alg
+    // let mut part_count = 0;
+    // // iterate over all files in the data directory and remove them
+    // for entry in fs::read_dir(&file_layout.data_dir_path())? {
+    //     let entry = entry?;
+    //     if entry.file_type()?.is_file() {
+    //         let path = entry.path();
+    //         let path = path.display();
+    //         if path.to_string().matches("Data????").count() == 1 {
+    //             part_count += 1;
+    //         }
+    //         else {
+    //             println!("Error {}", entry.path().display())
+    //         }
+    //     }
+    // }
 
+
+    
+    if args.dry_run {
+        return Ok(());
+    }
+
+    let con_header_path = file_layout.con_header_file_path();
+    let bytes = fs::read(con_header_path).unwrap();
+    let part_count = read_part_count(&bytes[..]) as u64;
+    let block_count = read_block_count(&bytes[..]);
+    let mht_hash = read_mht_hash(&bytes[..]);
+
+    println!("part count: {part_count}");
+    println!("block count: {block_count}");
+    println!("mht hash: {mht_hash:?}");
     println!("writing part files:  0/{part_count}");
 
     let progress = AtomicUsize::new(0);
 
     (0..part_count).into_par_iter().try_for_each(|part_index| {
         let mut iso_data_volume = File::open(&args.source_iso)?;
-        iso_data_volume.seek(SeekFrom::Start(source_iso.volume_descriptor.root_offset))?;
+        iso_data_volume.seek(SeekFrom::Start(root_offset))?;
 
         let part_file = file_layout.part_file_path(part_index);
 
@@ -183,7 +251,7 @@ fn main() -> Result<(), Error> {
             last_part_size + (part_count - 1) * god::BLOCK_SIZE * 0xa290,
         )
         .with_content_type(content_type)
-        .with_mht_hash(&mht.digest());
+        .with_mht_hash(&mht_hash);
 
     let game_title = args
         .game_title
