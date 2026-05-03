@@ -42,6 +42,21 @@ impl<'a> FileLayout<'a> {
         }
     }
 
+    // todo: change the names to match the c# algorithm
+    // the files can be renamed after the fact, the data just need to match the main filename
+    // MemoryStream memoryStream = new MemoryStream();
+    // CBinaryWriter cBinaryWriter = new CBinaryWriter(EndianType.LittleEndian, memoryStream);
+    // cBinaryWriter.Write(Iso.ID.TitleID);
+    // cBinaryWriter.Write(Iso.ID.MediaID);
+    // cBinaryWriter.Write(Iso.ID.DiscNumber);
+    // cBinaryWriter.Write(Iso.ID.DiscCount);
+    // byte[] array = sha1.ComputeHash(memoryStream.ToArray());
+    // string text = "";
+    // for (int i = 0; i < array.Length / 2; i++)
+    // {
+    //     text += array[i].ToString("X02");
+    // }
+    // return text;
     pub fn data_dir_path(&self) -> PathBuf {
         self.base_path
             .join(self.title_id_string())
